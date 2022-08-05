@@ -1,7 +1,7 @@
 #  Image-Shrink
 
 A simple Python GUI for compressing images to your desired size.  
-Tested with jpg/jpeg and png images.
+Tested with jpg/jpeg images.
 
 # Installation
 

@@ -42,6 +42,7 @@ def SaveImageWithTargetSize(path, new_path, target: float|int):
       print("ERROR: No acceptable quality factor found for: " + os.path.basename(path), file=sys.stderr)
 
 def image_processing_threaded(self, image, target_size, total_pixels, output_dir):
+    # Flag set if stop button is pressed
     if self.image_processing["stopped"]:
         return
 
@@ -63,6 +64,7 @@ def image_processing_threaded(self, image, target_size, total_pixels, output_dir
     except Exception as e:
         QtWidgets.QMessageBox.critical(self.centralwidget, "Error", str(e))
 
+    # Update progress bar
     self.image_processing["finished_images"] += 1
     self.progressBar.setValue( self.image_processing["finished_images"]/ self.image_processing["total_images"]*100)
 
@@ -85,17 +87,19 @@ class CustomTable(QtWidgets.QTableWidget):
             e.ignore()
     
     def dropEvent(self, e):
-      image_paths_string: str = e.mimeData().text()
-      image_paths = [os.path.normpath(path.split("file://")[1]) for path in image_paths_string.split("\n") if path.startswith("file://")]
-      image_paths = [path for path in image_paths if os.path.isfile(path)]
+        # Get the paths of the dropped files
+        image_paths_string: str = e.mimeData().text()
+        image_paths = [os.path.normpath(path.split("file://")[1]) for path in image_paths_string.split("\n") if path.startswith("file://")]
+        image_paths = [path for path in image_paths if os.path.isfile(path)]
 
-      for path in image_paths:
-        if path not in self.image_paths:
-            self.image_paths.add(path)
-            self.insertRow(self.rowCount())
-            self.setItem(self.rowCount() - 1, 0, QtWidgets.QTableWidgetItem(os.path.basename(path)))
-            self.setItem(self.rowCount() - 1, 1, QtWidgets.QTableWidgetItem(path))
-            self.setItem(self.rowCount() - 1, 2, QtWidgets.QTableWidgetItem(str(int(os.path.getsize(path) / 1000))))
+        for path in image_paths:
+            # Ignore if the image is already in the table
+            if path not in self.image_paths:
+                self.image_paths.add(path)
+                self.insertRow(self.rowCount())
+                self.setItem(self.rowCount() - 1, 0, QtWidgets.QTableWidgetItem(os.path.basename(path)))
+                self.setItem(self.rowCount() - 1, 1, QtWidgets.QTableWidgetItem(path))
+                self.setItem(self.rowCount() - 1, 2, QtWidgets.QTableWidgetItem(str(int(os.path.getsize(path) / 1000))))
 
 
 class Ui_MainWindow(object):
@@ -176,31 +180,36 @@ class Ui_MainWindow(object):
 
         images: List[Dict] = []
 
-        total_pixels = 0
+        # Create a list of dictionaries with all the information needed for the image processing
+        total_pixels = 0 # Total pixels of all images in the table
         for image_path in image_paths:
             try:
                 im = Image.open(image_path)
                 image_pixels = im.size[0] * im.size[1]
                 total_pixels += image_pixels
                 images.append({"path": image_path, "pixels": image_pixels})
+            # If the image can't be opened, skip it
             except Exception as e:
                 QtWidgets.QMessageBox.critical(self.centralwidget, "Error", str(e))
 
+        # Initialize temporary variables
         self.image_processing = {}
         self.image_processing["stopped"] = False
         self.image_processing["finished_images"] = 0
         self.image_processing["total_images"] = len(images)
 
-        threads = []
+        # Use user specified amount or 90% of the number of threads available as the number of threads for processing
         thread_count = int(self.lineEdit_thread_count.text()) if self.lineEdit_thread_count.text().isdecimal() else int(psutil.cpu_count()*0.9)
 
+        # Create a thread pool with the number of threads specified by the user and start the thread processing
+        threads = []
         pool = ThreadPool(processes=thread_count)
-        
         for image in images:
             threads.append(pool.apply_async(image_processing_threaded, args = (self, image, target_size, total_pixels, output_dir, )))
 
     def stopButtonAction(self):
-         self.image_processing["stopped"] = True
+        # This flag is checked before the start of each thread
+        self.image_processing["stopped"] = True
 
     def deleteButtonAction(self):
         for item in self.tableWidget.selectedItems():
