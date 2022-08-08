@@ -1,13 +1,11 @@
 import io
 import math
 import os
-import sys
-from multiprocessing.pool import ThreadPool
 from typing import Dict, List
 
 import psutil
 from PIL import Image
-from PySide6 import QtCore, QtGui, QtWidgets
+from PySide6 import QtCore, QtWidgets
 
 def SaveImageWithTargetSize(path, new_path, target: float|int):
    im = Image.open(path)
@@ -39,34 +37,45 @@ def SaveImageWithTargetSize(path, new_path, target: float|int):
    if Qacc > -1:
       im.save(new_path, quality=Qacc)
    else:
-      print("ERROR: No acceptable quality factor found for: " + os.path.basename(path), file=sys.stderr)
+        raise Exception("No acceptable quality factor found for: " + os.path.basename(path))
 
-def image_processing_threaded(self, image, target_size, total_pixels, output_dir):
-    # Flag set if stop button is pressed
-    if self.image_processing["stopped"]:
-        return
+class WorkerThread(QtCore.QThread):
+    def __init__(self, parentObject, image, target_size, total_pixels, output_dir):
+        QtCore.QThread.__init__(self, parentObject.centralwidget)
 
-    # If the target_size is the total size, calculate the image size from the ratio of the image pixels to the total pixels
-    if self.checkBox.isChecked():
-        image_target_size = int((image["pixels"]/total_pixels)*target_size)
-    else:
-        image_target_size = target_size
+        self.parentObject = parentObject
+        self.image = image
+        self.target_size = target_size
+        self.total_pixels = total_pixels
+        self.output_dir = output_dir
 
-    # If no output path is given, use the same path as the image and add a suffix
-    if not output_dir:
-        root, ext = os.path.splitext(image["path"])
-        out_path = root + "_resized_" + str(target_size/1000000).rstrip('0').rstrip('.') + "MB" + ext
-    else:
-        out_path = output_dir + os.path.sep + os.path.basename(image["path"])
+    finished = QtCore.Signal()
+    error = QtCore.Signal(Exception)
 
-    try:
-        SaveImageWithTargetSize(image["path"], out_path, image_target_size)
-    except Exception as e:
-        QtWidgets.QMessageBox.critical(self.centralwidget, "Error", str(e))
+    def run(self):
+        # Flag set if stop button is pressed
+        if self.parentObject.image_processing["stopped"]:
+            return
 
-    # Update progress bar
-    self.image_processing["finished_images"] += 1
-    self.progressBar.setValue( self.image_processing["finished_images"]/ self.image_processing["total_images"]*100)
+        # If the target_size is the total size, calculate the image size from the ratio of the image pixels to the total pixels
+        if self.parentObject.checkBox.isChecked():
+            self.image_target_size = int((self.image["pixels"]/self.total_pixels)*self.target_size)
+        else:
+            self.image_target_size = self.target_size
+
+        # If no output path is given, use the same path as the image and add a suffix
+        if not self.output_dir:
+            root, ext = os.path.splitext(self.image["path"])
+            out_path = root + "_resized_" + str(self.target_size/1000000).rstrip('0').rstrip('.') + "MB" + ext
+        else:
+            out_path = self.output_dir + os.path.sep + os.path.basename(self.image["path"])
+
+        try:
+            SaveImageWithTargetSize(self.image["path"], out_path, self.image_target_size)
+        except Exception as e:
+            self.error.emit(e)
+
+        self.finished.emit()
 
 
 class CustomTable(QtWidgets.QTableWidget):
@@ -89,7 +98,11 @@ class CustomTable(QtWidgets.QTableWidget):
     def dropEvent(self, e):
         # Get the paths of the dropped files
         image_paths_string: str = e.mimeData().text()
-        image_paths = [os.path.normpath(path.split("file://")[1]) for path in image_paths_string.split("\n") if path.startswith("file://")]
+        image_paths = [path for path in image_paths_string.split("\n") if path.startswith("file://")]
+        if os.name == "nt":
+            image_paths = [os.path.normpath(path.split("file:///")[1]) for path in image_paths]
+        else:
+            image_paths = [os.path.normpath(path.split("file://")[1]) for path in image_paths]
         image_paths = [path for path in image_paths if os.path.isfile(path)]
 
         for path in image_paths:
@@ -201,11 +214,30 @@ class Ui_MainWindow(object):
         # Use user specified amount or 90% of the number of threads available as the number of threads for processing
         thread_count = int(self.lineEdit_thread_count.text()) if self.lineEdit_thread_count.text().isdecimal() else int(psutil.cpu_count()*0.9)
 
-        # Create a thread pool with the number of threads specified by the user and start the thread processing
-        threads = []
-        pool = ThreadPool(processes=thread_count)
+        self.threads: List[WorkerThread] = []
         for image in images:
-            threads.append(pool.apply_async(image_processing_threaded, args = (self, image, target_size, total_pixels, output_dir, )))
+            self.threads.append(WorkerThread(self, image, target_size, total_pixels, output_dir))
+
+        for i in range(thread_count if thread_count < len(self.threads) else len(self.threads)):
+            thread = self.threads.pop(0)
+            thread.start()
+            thread.finished.connect(self.thread_finished)
+            thread.error.connect(self.error_emitted)
+
+    def thread_finished(self):
+        # Update progress bar
+        self.image_processing["finished_images"] += 1
+        self.progressBar.setValue(self.image_processing["finished_images"]/self.image_processing["total_images"]*100)
+
+        # Start next thread if there are still images to process 
+        if self.threads and not self.image_processing["stopped"]:
+            thread = self.threads.pop(0)
+            thread.start()
+            thread.finished.connect(self.thread_finished)
+            thread.error.connect(self.error_emitted)
+
+    def error_emitted(self, exception):
+        QtWidgets.QMessageBox.critical(self.centralwidget, "Error", str(exception))
 
     def stopButtonAction(self):
         # This flag is checked before the start of each thread
